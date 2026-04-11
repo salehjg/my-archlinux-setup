@@ -27,7 +27,7 @@ section "Installing packages"
 
 PACKAGES=(
   sway swaybg swaylock swayidle
-  foot waybar wofi
+  foot waybar wofi fuzzel
   xorg-xwayland
 
   networkmanager network-manager-applet
@@ -39,13 +39,11 @@ PACKAGES=(
   grim slurp wl-clipboard
   brightnessctl playerctl
 
-  # Added font-awesome for the icons in the bar
   noto-fonts noto-fonts-emoji ttf-dejavu otf-font-awesome
   git curl base-devel
 
   pavucontrol blueman power-profiles-daemon
 
-  # Calendar and Evolution stack
   gnome-calendar gnome-online-accounts evolution-data-server evolution
 )
 
@@ -134,6 +132,9 @@ cat >> "$SWAY_CFG" <<'EOF'
 set $menu wofi --show drun
 bindsym $mod+d exec $menu
 
+# Keybinding Cheat Sheet (Searchable)
+bindsym $mod+Shift+slash exec grep -E '^ *bindsym' ~/.config/sway/config | sed 's/bindsym //g' | wofi --dmenu -p "Keybinds" -i
+
 # Power menu
 bindsym $mod+Shift+p exec wlogout
 
@@ -178,7 +179,7 @@ section "Waybar (Config & Style)"
 
 mkdir -p ~/.config/waybar
 
-# Waybar Configuration with HW stats and Evolution Calendar trigger
+# (Rest of your Waybar and Wofi config remains identical...)
 cat > ~/.config/waybar/config <<'EOF'
 {
     "layer": "top",
@@ -241,7 +242,6 @@ cat > ~/.config/waybar/config <<'EOF'
 }
 EOF
 
-# Waybar CSS for Rounded Square/Pill look
 cat > ~/.config/waybar/style.css <<'EOF'
 * {
     font-family: "Noto Sans", "Font Awesome 6 Free", "Font Awesome 6 Brands", sans-serif;
@@ -268,7 +268,6 @@ window#waybar {
     background-color: rgba(255, 255, 255, 0.1);
 }
 
-/* Rounded Pill Styling */
 #clock, #cpu, #memory, #pulseaudio, #network, #battery, #tray {
     padding: 0 10px;
     margin: 4px 2px;
@@ -321,11 +320,10 @@ section "Done"
 echo -e "
 ${GREEN}${BOLD}✔ SETUP COMPLETE (PRETTIFIED)${RESET}
 
-✔ Added Evolution & Calendar
-✔ Waybar now has Icons (FontAwesome)
-✔ Rounded 'Pill' style categorization
-✔ CPU & RAM usage added
-✔ Click Clock to open Calendar
+✔ Added Searchable Keybinding Cheat Sheet
+✔ Press Mod+Shift+? to search keybinds
+✔ Waybar now has Icons & Pill style
+✔ Click Clock for Calendar
 
-👉 Restart Sway to see the new bar!
+👉 Restart Sway to see the new bar and keybind!
 "
