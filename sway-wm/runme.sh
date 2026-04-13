@@ -39,6 +39,8 @@ PACKAGES=(
 
   grim slurp wl-clipboard
   brightnessctl playerctl
+  mako
+  xdg-desktop-portal-gtk
 
   noto-fonts noto-fonts-emoji ttf-dejavu otf-font-awesome
   git curl base-devel
@@ -70,6 +72,7 @@ fi
 section "Installing wlogout"
 yay -S --needed --noconfirm wlogout || warn "wlogout install failed"
 yay -S --needed --noconfirm nwg-look || warn "nwg-look install failed"
+yay -S --needed --noconfirm forticlient-vpn || warn "forticlient-vpn install failed"
 
 # ── Services ───────────────────────────────────────────────
 section "Enabling services"
@@ -144,6 +147,18 @@ if [ -f "$SWAY_DESKTOP" ]; then
   info "Set sway.desktop to launch via sway-igpu wrapper"
 fi
 
+# ── Portal config ─────────────────────────────────────────
+section "Configuring xdg-desktop-portal"
+
+mkdir -p ~/.config/xdg-desktop-portal
+cat > ~/.config/xdg-desktop-portal/sway-portals.conf <<EOF
+[preferred]
+default=gtk
+org.freedesktop.impl.portal.Screenshot=wlr
+org.freedesktop.impl.portal.ScreenCast=wlr
+EOF
+info "Portal: wlr for screen capture, gtk for everything else"
+
 # ── Sway config ────────────────────────────────────────────
 section "Configuring Sway"
 
@@ -198,6 +213,12 @@ exec nm-applet --indicator
 exec blueman-applet
 exec waybar
 exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
+
+# Notifications
+exec mako
+
+# FortiClient tray (handles VPN SAML trust dialogs)
+exec /opt/forticlient/fortitraylauncher
 
 # Portal
 exec_always /usr/lib/xdg-desktop-portal-wlr
