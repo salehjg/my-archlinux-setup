@@ -389,6 +389,16 @@ window#waybar {
 }
 EOF
 
+# ── Foot (terminal) ───────────────────────────────────────
+section "Foot"
+
+mkdir -p ~/.config/foot
+
+cat > ~/.config/foot/foot.ini <<'EOF'
+[main]
+font=monospace:size=12
+EOF
+
 # ── Wofi ──────────────────────────────────────────────────
 section "Wofi"
 
