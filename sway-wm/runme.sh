@@ -211,6 +211,12 @@ input type:touchpad {
     accel_profile adaptive
 }
 
+# Keyboard
+input type:keyboard {
+    xkb_layout gb
+    xkb_model pc105
+}
+
 # Mouse
 input type:pointer {
     pointer_accel 0.0
