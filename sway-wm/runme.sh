@@ -29,6 +29,7 @@ PACKAGES=(
   sway swaybg swaylock swayidle
   foot waybar wofi fuzzel
   xorg-xwayland
+  vulkan-intel vulkan-icd-loader
 
   networkmanager network-manager-applet
   polkit-gnome gnome-keyring
@@ -43,6 +44,7 @@ PACKAGES=(
   git curl base-devel
 
   pavucontrol blueman power-profiles-daemon
+  wdisplays
 
   gnome-calendar gnome-online-accounts evolution-data-server evolution
 )
@@ -67,6 +69,7 @@ fi
 # ── Install wlogout ────────────────────────────────────────
 section "Installing wlogout"
 yay -S --needed --noconfirm wlogout || warn "wlogout install failed"
+yay -S --needed --noconfirm nwg-look || warn "nwg-look install failed"
 
 # ── Services ───────────────────────────────────────────────
 section "Enabling services"
@@ -86,6 +89,18 @@ if ! grep -q pam_gnome_keyring.so "$PAM_FILE"; then
   sudo sed -i '/^session/a session    optional     pam_gnome_keyring.so auto_start' "$PAM_FILE"
 fi
 
+# ── User groups (GPU access) ──────────────────────────────
+section "Ensuring video/render group membership"
+
+for grp in video render; do
+  if ! id -nG | grep -qw "$grp"; then
+    sudo usermod -aG "$grp" "$USER"
+    info "Added $USER to $grp group"
+  else
+    info "$USER already in $grp group"
+  fi
+done
+
 # ── Environment ────────────────────────────────────────────
 section "Environment"
 
@@ -98,6 +113,36 @@ CLUTTER_BACKEND=wayland
 QT_QPA_PLATFORM=wayland;xcb
 MOZ_ENABLE_WAYLAND=1
 EOF
+
+# ── GDM session (Intel iGPU only) ─────────────────────────
+section "Patching GDM session entry for Intel iGPU"
+
+# Wrapper script sets WLR_DRM_DEVICES to the Intel iGPU.
+# We use a script instead of inline env in the .desktop file
+# because the desktop entry format splits values on colons,
+# which breaks by-path device paths.
+SWAY_WRAPPER="/usr/local/bin/sway-igpu"
+# Resolve by-path symlinks to real /dev/dri/cardN devices.
+# WLR_DRM_DEVICES uses ':' as a multi-device separator, so
+# by-path names (which contain colons) cannot be used directly.
+# Intel is listed first so it becomes the primary renderer.
+# NVIDIA is second so Sway can output to HDMI/DP wired through it.
+INTEL_CARD=$(readlink -f /dev/dri/by-path/pci-0000:00:02.0-card)
+NVIDIA_CARD=$(readlink -f /dev/dri/by-path/pci-0000:01:00.0-card)
+sudo tee "$SWAY_WRAPPER" > /dev/null <<WRAPPER
+#!/bin/sh
+export WLR_DRM_DEVICES=${INTEL_CARD}:${NVIDIA_CARD}
+export WLR_RENDERER=vulkan
+exec sway --unsupported-gpu "\$@"
+WRAPPER
+sudo chmod +x "$SWAY_WRAPPER"
+info "Installed $SWAY_WRAPPER"
+
+SWAY_DESKTOP="/usr/share/wayland-sessions/sway.desktop"
+if [ -f "$SWAY_DESKTOP" ]; then
+  sudo sed -i "s|^Exec=.*|Exec=sway-igpu|" "$SWAY_DESKTOP"
+  info "Set sway.desktop to launch via sway-igpu wrapper"
+fi
 
 # ── Sway config ────────────────────────────────────────────
 section "Configuring Sway"
@@ -162,7 +207,22 @@ input type:touchpad {
     tap enabled
     natural_scroll enabled
     tap_button_map lrm
+    pointer_accel 0.0
+    accel_profile adaptive
 }
+
+# Mouse
+input type:pointer {
+    pointer_accel 0.0
+    accel_profile flat
+    natural_scroll disabled
+}
+
+# Display settings
+bindsym $mod+Shift+d exec wdisplays
+
+# Appearance settings (GTK theme, cursor, fonts)
+bindsym $mod+Shift+a exec nwg-look
 
 # Idle
 exec swayidle -w \
