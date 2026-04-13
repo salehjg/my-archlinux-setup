@@ -236,6 +236,7 @@ input type:touchpad {
 input type:keyboard {
     xkb_layout gb
     xkb_model pc105
+    xkb_numlock enabled
 }
 
 # Mouse
