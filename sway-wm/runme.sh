@@ -1,6 +1,72 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ==========================================================
+# Sway WM Setup Script
+# ==========================================================
+#
+# KEYBINDINGS
+# -----------
+# Mod = Super (Windows) key
+#
+# Launching
+#   Mod+Return          Open terminal (kitty)
+#   Mod+D               App launcher (wofi)
+#   Mod+Shift+P         Power menu (wlogout)
+#   Mod+Shift+Q         Kill focused window
+#
+# System
+#   Mod+Shift+C         Reload sway config
+#   Mod+Shift+E         Exit sway
+#   Mod+Shift+BackSpace  Lock screen (swaylock)
+#   Mod+Shift+/         Searchable keybind cheat sheet
+#
+# Settings
+#   Mod+Shift+D         Display settings (wdisplays)
+#   Mod+Shift+A         Appearance/GTK settings (nwg-look)
+#   Mod+Shift+M         Mouse speed picker
+#   Mod+Shift+O         Save current display layout (kanshi)
+#
+# Focus (vim-style or arrow keys)
+#   Mod+H/J/K/L         Focus left/down/up/right
+#   Mod+Left/Down/Up/Right
+#
+# Move windows
+#   Mod+Shift+H/J/K/L   Move window left/down/up/right
+#   Mod+Shift+Arrows
+#
+# Workspaces
+#   Mod+1..10           Switch to workspace
+#   Mod+Shift+1..10     Move window to workspace
+#
+# Layout
+#   Mod+B               Split horizontal
+#   Mod+V               Split vertical
+#   Mod+S               Stacking layout
+#   Mod+W               Tabbed layout
+#   Mod+E               Toggle split
+#   Mod+F               Fullscreen
+#   Mod+Shift+Space     Toggle floating
+#   Mod+Space           Focus mode toggle
+#   Mod+A               Focus parent
+#   Mod+R               Enter resize mode
+#
+# Scratchpad
+#   Mod+Shift+-         Move window to scratchpad
+#   Mod+-               Show scratchpad
+#
+# Media / Brightness
+#   XF86AudioMute       Mute
+#   XF86AudioLower/RaiseVolume
+#   XF86MonBrightnessDown/Up
+#   Print               Screenshot (region select, saves + copies to clipboard)
+#
+# Waybar (click)
+#   Power profile       Click to cycle: performance / balanced / power-saver
+#   Clock               Click to open calendar
+#   Pulseaudio          Click to open pavucontrol
+# ==========================================================
+
 # ── Styling ────────────────────────────────────────────────
 BOLD="\033[1m"
 GREEN="\033[1;32m"
@@ -27,7 +93,7 @@ section "Installing packages"
 
 PACKAGES=(
   sway swaybg swaylock swayidle
-  foot waybar wofi fuzzel
+  kitty waybar wofi fuzzel
   xorg-xwayland
   vulkan-intel vulkan-icd-loader
 
@@ -43,15 +109,25 @@ PACKAGES=(
   xdg-desktop-portal-gtk
 
   noto-fonts noto-fonts-emoji ttf-dejavu otf-font-awesome
+  ttf-nerd-fonts-symbols ttf-nerd-fonts-symbols-mono
   git curl base-devel
 
   pavucontrol blueman power-profiles-daemon
-  wdisplays
+  wdisplays kanshi
+  intel-gpu-tools
 
   gnome-calendar gnome-online-accounts evolution-data-server evolution
 )
 
 sudo pacman -S --needed --noconfirm "${PACKAGES[@]}"
+
+# Grant intel_gpu_top permission to read performance counters without root
+sudo setcap cap_perfmon+ep "$(which intel_gpu_top)"
+info "Set cap_perfmon on intel_gpu_top"
+
+# Rebuild font cache so waybar and apps find newly installed fonts
+fc-cache -fv &>/dev/null
+info "Font cache rebuilt"
 
 # ── Install yay (AUR helper) ───────────────────────────────
 section "Installing yay (AUR helper)"
@@ -68,10 +144,10 @@ else
   info "yay already installed"
 fi
 
-# ── Install wlogout ────────────────────────────────────────
-section "Installing wlogout"
-yay -S --needed --noconfirm wlogout || warn "wlogout install failed"
-yay -S --needed --noconfirm nwg-look || warn "nwg-look install failed"
+# ── AUR packages ───────────────────────────────────────────
+section "Installing AUR packages"
+yay -S --needed --noconfirm wlogout       || warn "wlogout install failed"
+yay -S --needed --noconfirm nwg-look      || warn "nwg-look install failed"
 yay -S --needed --noconfirm forticlient-vpn || warn "forticlient-vpn install failed"
 
 # ── Services ───────────────────────────────────────────────
@@ -95,14 +171,19 @@ fi
 # ── User groups (GPU access) ──────────────────────────────
 section "Ensuring video/render group membership"
 
+GROUP_CHANGED=false
 for grp in video render; do
   if ! id -nG | grep -qw "$grp"; then
     sudo usermod -aG "$grp" "$USER"
     info "Added $USER to $grp group"
+    GROUP_CHANGED=true
   else
     info "$USER already in $grp group"
   fi
 done
+if [[ "$GROUP_CHANGED" == true ]]; then
+  warn "Group membership changed — a reboot is required before launching Sway"
+fi
 
 # ── Environment ────────────────────────────────────────────
 section "Environment"
@@ -130,8 +211,27 @@ SWAY_WRAPPER="/usr/local/bin/sway-igpu"
 # by-path names (which contain colons) cannot be used directly.
 # Intel is listed first so it becomes the primary renderer.
 # NVIDIA is second so Sway can output to HDMI/DP wired through it.
-INTEL_CARD=$(readlink -f /dev/dri/by-path/pci-0000:00:02.0-card)
-NVIDIA_CARD=$(readlink -f /dev/dri/by-path/pci-0000:01:00.0-card)
+# Detect Intel and NVIDIA DRM card devices by PCI vendor ID
+find_gpu_card() {
+  local vendor_id="$1"
+  for p in /sys/bus/pci/devices/*/; do
+    [[ "$(cat "$p/vendor" 2>/dev/null)" == "$vendor_id" ]] || continue
+    [[ "$(cat "$p/class"  2>/dev/null)" == "0x030000"   ]] || continue
+    for card in "$p"drm/card*/; do
+      [[ -d "$card" ]] || continue
+      card="${card%/}"
+      echo "/dev/dri/${card##*drm/}"
+      return
+    done
+  done
+}
+
+INTEL_CARD=$(find_gpu_card "0x8086")
+NVIDIA_CARD=$(find_gpu_card "0x10de")
+
+[[ -e "$INTEL_CARD" ]]  || error "Intel GPU DRM device not found"
+[[ -e "$NVIDIA_CARD" ]] || error "NVIDIA GPU DRM device not found"
+info "Intel GPU: $INTEL_CARD   NVIDIA GPU: $NVIDIA_CARD"
 sudo tee "$SWAY_WRAPPER" > /dev/null <<WRAPPER
 #!/bin/sh
 export WLR_DRM_DEVICES=${INTEL_CARD}:${NVIDIA_CARD}
@@ -159,6 +259,67 @@ org.freedesktop.impl.portal.ScreenCast=wlr
 EOF
 info "Portal: wlr for screen capture, gtk for everything else"
 
+# ── Kanshi (display persistence) ──────────────────────────
+section "Kanshi"
+
+mkdir -p ~/.config/kanshi
+
+# Only create a stub config if none exists — user configures profiles here
+if [[ ! -f ~/.config/kanshi/config ]]; then
+  cat > ~/.config/kanshi/config <<'EOF'
+# Kanshi persists display layout across restarts.
+# Profiles are matched by output names. Example:
+#
+# profile laptop-only {
+#   output eDP-1 enable mode 1920x1200 position 0,0
+# }
+#
+# profile docked {
+#   output eDP-1 enable mode 1920x1200 position 0,0
+#   output HDMI-A-1 enable mode 1920x1080 position 1920,0
+# }
+#
+# Run 'swaymsg -t get_outputs' to find your output names.
+# Run 'kanshictl reload' after editing.
+EOF
+  info "Created stub kanshi config — edit ~/.config/kanshi/config to set display profiles"
+fi
+
+# Helper script: saves current sway output layout as a kanshi profile
+cat > ~/.config/kanshi/save-current.sh <<'EOF'
+#!/bin/bash
+# Saves the current sway output layout as a new kanshi profile.
+PROFILE_NAME="${1:-saved-$(date +%Y%m%d%H%M%S)}"
+KANSHI_CFG="$HOME/.config/kanshi/config"
+
+outputs=$(swaymsg -t get_outputs | python3 -c "
+import json, sys
+outputs = json.load(sys.stdin)
+lines = []
+for o in outputs:
+    if not o['active']:
+        continue
+    name = o['name']
+    mode = o['current_mode']
+    w, h, r = mode['width'], mode['height'], round(mode['refresh'] / 1000)
+    x, y = o['rect']['x'], o['rect']['y']
+    scale = o.get('scale', 1.0)
+    lines.append(f'  output {name} enable mode {w}x{h}@{r}Hz position {x},{y} scale {scale}')
+print('\n'.join(lines))
+")
+
+echo "" >> "\$KANSHI_CFG"
+echo "profile \$PROFILE_NAME {" >> "\$KANSHI_CFG"
+echo "\$outputs" >> "\$KANSHI_CFG"
+echo "}" >> "\$KANSHI_CFG"
+
+notify-send "Kanshi" "Profile '\$PROFILE_NAME' saved" 2>/dev/null || true
+kanshictl reload 2>/dev/null || true
+echo "Saved profile '\$PROFILE_NAME' to \$KANSHI_CFG"
+EOF
+chmod +x ~/.config/kanshi/save-current.sh
+info "Installed kanshi save-current.sh helper"
+
 # ── Sway config ────────────────────────────────────────────
 section "Configuring Sway"
 
@@ -179,6 +340,7 @@ sed -i '/# >>> sway-setup/,/# <<< sway-setup/d' "$SWAY_CFG"
 # Remove conflicting default bindings
 sed -i '/set \$menu wmenu-run/d' "$SWAY_CFG"
 sed -i '/bindsym \$mod+d exec \$menu/d' "$SWAY_CFG"
+sed -i '/bindsym Print exec grim$/d' "$SWAY_CFG"
 
 # Remove default bar
 sed -i '/^bar {/,/^}/d' "$SWAY_CFG"
@@ -187,6 +349,9 @@ sed -i '/^bar {/,/^}/d' "$SWAY_CFG"
 cat >> "$SWAY_CFG" <<'EOF'
 
 # >>> sway-setup (managed)
+
+# Terminal
+set $term kitty
 
 # Launcher
 set $menu wofi --show drun
@@ -206,13 +371,14 @@ exec_always systemctl --user import-environment \
   WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE SSH_AUTH_SOCK
 
 # Start gnome-keyring
-exec_always eval $(gnome-keyring-daemon --start --components=secrets,ssh,pkcs11)
+exec_always sh -c 'eval $(gnome-keyring-daemon --start --components=secrets,ssh 2>/dev/null)'
 
 # Autostart apps
 exec nm-applet --indicator
 exec blueman-applet
 exec waybar
 exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
+exec_always kanshi
 
 # Notifications
 exec mako
@@ -246,11 +412,23 @@ input type:pointer {
     natural_scroll disabled
 }
 
+# Lock screen
+bindsym $mod+Shift+BackSpace exec swaylock -f -c 1a1a2e
+
+# Screenshot (region select → save to ~/Pictures/Screenshots + copy to clipboard)
+bindsym Print exec ~/.config/waybar/scripts/screenshot.sh
+
 # Display settings
 bindsym $mod+Shift+d exec wdisplays
 
 # Appearance settings (GTK theme, cursor, fonts)
 bindsym $mod+Shift+a exec nwg-look
+
+# Mouse speed picker
+bindsym $mod+Shift+m exec ~/.config/waybar/scripts/mouse-speed.sh
+
+# Save current display layout as kanshi profile
+bindsym $mod+Shift+o exec ~/.config/kanshi/save-current.sh
 
 # Idle
 exec swayidle -w \
@@ -262,12 +440,99 @@ exec swayidle -w \
 # <<< sway-setup
 EOF
 
+# ── Waybar scripts ────────────────────────────────────────
+section "Waybar scripts"
+
+mkdir -p ~/.config/waybar/scripts
+
+# Intel iGPU usage — reads from sysfs (no root needed on xe/i915)
+cat > ~/.config/waybar/scripts/gpu-intel.sh <<'EOF'
+#!/bin/bash
+intel_gpu_top -J -s 500 -n 1 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if isinstance(data, list): data = data[-1]
+    engines = data.get('engines', {})
+    vals = [e.get('busy', 0) for e in engines.values()]
+    freq = data.get('frequency', {}).get('actual', 0)
+    usage = int(max(vals)) if vals else 0
+    print(json.dumps({'text': f'{usage}%', 'tooltip': f'Intel iGPU\nUsage: {usage}%\nFreq: {freq:.0f} MHz'}))
+except:
+    print(json.dumps({'text': '?%', 'tooltip': 'Intel iGPU\nData unavailable'}))
+"
+EOF
+chmod +x ~/.config/waybar/scripts/gpu-intel.sh
+
+# NVIDIA GPU usage
+cat > ~/.config/waybar/scripts/gpu-nvidia.sh <<'EOF'
+#!/bin/bash
+nvidia-smi --query-gpu=utilization.gpu,clocks.current.graphics,temperature.gpu \
+  --format=csv,noheader,nounits 2>/dev/null | python3 -c "
+import json, sys
+try:
+    line = sys.stdin.read().strip()
+    parts = [p.strip() for p in line.split(',')]
+    usage, freq, temp = parts[0], parts[1], parts[2]
+    print(json.dumps({'text': f'{usage}%', 'tooltip': f'NVIDIA RTX 2000\nUsage: {usage}%\nFreq: {freq} MHz\nTemp: {temp} C'}))
+except:
+    print(json.dumps({'text': '?%', 'tooltip': 'NVIDIA RTX 2000\nData unavailable'}))
+"
+EOF
+chmod +x ~/.config/waybar/scripts/gpu-nvidia.sh
+
+# Power profile: show current / cycle on click
+cat > ~/.config/waybar/scripts/power-profile.sh <<'EOF'
+#!/bin/bash
+if [[ "$1" == "cycle" ]]; then
+  current=$(powerprofilesctl get)
+  case $current in
+    performance) powerprofilesctl set balanced ;;
+    balanced)    powerprofilesctl set power-saver ;;
+    power-saver) powerprofilesctl set performance ;;
+  esac
+  exit 0
+fi
+current=$(powerprofilesctl get)
+case $current in
+  performance) echo '{"text":"󰓅 perf","class":"performance","tooltip":"Performance"}' ;;
+  balanced)    echo '{"text":"󰾅 bal","class":"balanced","tooltip":"Balanced"}' ;;
+  power-saver) echo '{"text":"󰾆 save","class":"power-saver","tooltip":"Power Saver"}' ;;
+  *)           echo '{"text":"? '"$current"'","class":"unknown"}' ;;
+esac
+EOF
+chmod +x ~/.config/waybar/scripts/power-profile.sh
+
+# Mouse speed picker (wofi-based)
+cat > ~/.config/waybar/scripts/mouse-speed.sh <<'EOF'
+#!/bin/bash
+choice=$(printf "slow (-0.5)\nnormal (0.0)\nfast (0.5)\nvery fast (0.9)" | wofi --dmenu -p "Mouse speed" -i | grep -oP '[0-9.-]+')
+[[ -z "$choice" ]] && exit 0
+swaymsg "input type:pointer pointer_accel $choice"
+swaymsg "input type:touchpad pointer_accel $choice"
+notify-send "Mouse speed" "Set to $choice" 2>/dev/null || true
+EOF
+chmod +x ~/.config/waybar/scripts/mouse-speed.sh
+
+# Screenshot: region select, save to file, copy to clipboard
+cat > ~/.config/waybar/scripts/screenshot.sh <<'EOF'
+#!/bin/bash
+DIR="$HOME/Pictures/Screenshots"
+mkdir -p "$DIR"
+FILE="$DIR/$(date +%Y%m%d-%H%M%S).png"
+region=$(slurp 2>/dev/null) || exit 0   # exit cleanly if user cancels
+grim -g "$region" - | tee "$FILE" | wl-copy --type image/png
+notify-send "Screenshot" "Saved to $FILE" 2>/dev/null || true
+EOF
+chmod +x ~/.config/waybar/scripts/screenshot.sh
+
+info "Waybar scripts installed"
+
 # ── Waybar ────────────────────────────────────────────────
 section "Waybar (Config & Style)"
 
 mkdir -p ~/.config/waybar
 
-# (Rest of your Waybar and Wofi config remains identical...)
 cat > ~/.config/waybar/config <<'EOF'
 {
     "layer": "top",
@@ -276,7 +541,7 @@ cat > ~/.config/waybar/config <<'EOF'
     "spacing": 4,
     "modules-left": ["sway/workspaces", "sway/mode"],
     "modules-center": ["clock"],
-    "modules-right": ["cpu", "memory", "pulseaudio", "network", "battery", "tray"],
+    "modules-right": ["custom/power-profile", "cpu", "custom/gpu-intel", "custom/gpu-nvidia", "memory", "pulseaudio", "network", "battery", "tray"],
 
     "sway/workspaces": {
         "disable-scroll": true,
@@ -326,13 +591,38 @@ cat > ~/.config/waybar/config <<'EOF'
         },
         "format": "{icon} {capacity}%",
         "format-icons": ["", "", "", "", ""]
+    },
+
+    "custom/gpu-intel": {
+        "exec": "~/.config/waybar/scripts/gpu-intel.sh",
+        "return-type": "json",
+        "interval": 2,
+        "format": "󰘚 {text}",
+        "tooltip": true
+    },
+
+    "custom/gpu-nvidia": {
+        "exec": "~/.config/waybar/scripts/gpu-nvidia.sh",
+        "return-type": "json",
+        "interval": 2,
+        "format": "󰢮 {text}",
+        "tooltip": true
+    },
+
+    "custom/power-profile": {
+        "exec": "~/.config/waybar/scripts/power-profile.sh",
+        "return-type": "json",
+        "interval": 5,
+        "on-click": "~/.config/waybar/scripts/power-profile.sh cycle",
+        "format": "{}",
+        "tooltip": true
     }
 }
 EOF
 
 cat > ~/.config/waybar/style.css <<'EOF'
 * {
-    font-family: "Noto Sans", "Font Awesome 6 Free", "Font Awesome 6 Brands", sans-serif;
+    font-family: "Noto Sans", "Font Awesome 6 Free", "Font Awesome 6 Brands", "Symbols Nerd Font Mono", sans-serif;
     font-size: 13px;
     border: none;
     border-radius: 0;
@@ -356,7 +646,8 @@ window#waybar {
     background-color: rgba(255, 255, 255, 0.1);
 }
 
-#clock, #cpu, #memory, #pulseaudio, #network, #battery, #tray {
+#clock, #cpu, #memory, #pulseaudio, #network, #battery, #tray,
+#custom-gpu-intel, #custom-gpu-nvidia, #custom-power-profile {
     padding: 0 10px;
     margin: 4px 2px;
     border-radius: 8px;
@@ -369,8 +660,8 @@ window#waybar {
     font-weight: bold;
 }
 
-#cpu { background-color: #4b5263; color: #fb8c00; }
-#memory { background-color: #4b5263; color: #8e44ad; }
+#cpu { background-color: #4b5263; color: #fb8c00; min-width: 58px; }
+#memory { background-color: #4b5263; color: #8e44ad; min-width: 58px; }
 #pulseaudio { background-color: #4b5263; color: #2ecc71; }
 #network { background-color: #4b5263; color: #3498db; }
 #battery { background-color: #4b5263; color: #f1c40f; }
@@ -388,16 +679,24 @@ window#waybar {
 @keyframes blink {
     to { background-color: #ffffff; color: #000000; }
 }
+
+#custom-gpu-intel  { background-color: #4b5263; color: #00bfff; min-width: 58px; }
+#custom-gpu-nvidia { background-color: #4b5263; color: #76b900; min-width: 58px; }
+#custom-power-profile { background-color: #4b5263; color: #ffffff; min-width: 68px; }
+#custom-power-profile.performance { color: #ff6b6b; }
+#custom-power-profile.balanced    { color: #ffffff; }
+#custom-power-profile.power-saver { color: #a8e6cf; }
 EOF
 
-# ── Foot (terminal) ───────────────────────────────────────
-section "Foot"
+# ── Kitty (terminal) ──────────────────────────────────────
+section "Kitty"
 
-mkdir -p ~/.config/foot
+mkdir -p ~/.config/kitty
 
-cat > ~/.config/foot/foot.ini <<'EOF'
-[main]
-font=monospace:size=12
+cat > ~/.config/kitty/kitty.conf <<'EOF'
+font_family      monospace
+font_size        12.0
+enable_audio_bell no
 EOF
 
 # ── Wofi ──────────────────────────────────────────────────
@@ -416,12 +715,8 @@ EOF
 section "Done"
 
 echo -e "
-${GREEN}${BOLD}✔ SETUP COMPLETE (PRETTIFIED)${RESET}
+${GREEN}${BOLD}SETUP COMPLETE${RESET}
 
-✔ Added Searchable Keybinding Cheat Sheet
-✔ Press Mod+Shift+? to search keybinds
-✔ Waybar now has Icons & Pill style
-✔ Click Clock for Calendar
-
-👉 Restart Sway to see the new bar and keybind!
+Log out and select Sway from GDM to start.
+See the top of this script for all keybindings.
 "
