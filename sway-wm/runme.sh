@@ -38,6 +38,8 @@ set -euo pipefail
 # Workspaces
 #   Mod+1..10           Switch to workspace
 #   Mod+Shift+1..10     Move window to workspace
+#   Mod+ScrollUp/Down   Switch workspace
+#   Mod+Shift+Scroll    Move window to prev/next workspace
 #
 # Layout
 #   Mod+B               Split horizontal
@@ -260,65 +262,54 @@ EOF
 info "Portal: wlr for screen capture, gtk for everything else"
 
 # ── Kanshi (display persistence) ──────────────────────────
-section "Kanshi"
+section "Kanshi (display layout persistence)"
 
-mkdir -p ~/.config/kanshi
+mkdir -p ~/.config/kanshi/profiles.d
 
-# Only create a stub config if none exists — user configures profiles here
-if [[ ! -f ~/.config/kanshi/config ]]; then
-  cat > ~/.config/kanshi/config <<'EOF'
-# Kanshi persists display layout across restarts.
-# Profiles are matched by output names. Example:
-#
-# profile laptop-only {
-#   output eDP-1 enable mode 1920x1200 position 0,0
-# }
-#
-# profile docked {
-#   output eDP-1 enable mode 1920x1200 position 0,0
-#   output HDMI-A-1 enable mode 1920x1080 position 1920,0
-# }
-#
-# Run 'swaymsg -t get_outputs' to find your output names.
-# Run 'kanshictl reload' after editing.
+# Main config just includes per-layout files from profiles.d/
+cat > ~/.config/kanshi/config <<'EOF'
+include ~/.config/kanshi/profiles.d/*.conf
 EOF
-  info "Created stub kanshi config — edit ~/.config/kanshi/config to set display profiles"
-fi
 
-# Helper script: saves current sway output layout as a kanshi profile
+# Save script: writes one file per output-set to profiles.d/.
+# Filename = connected output names (e.g. eDP-1_HDMI-A-1.conf).
+# Overwriting the file is all that's needed — no regex removal.
+#
+# NOTE: No \$ escaping here. Inside <<'EOF' heredocs the content is
+# written literally, so $VAR → $VAR in the file → bash expands it
+# when the script runs. \$VAR would produce a literal "$VAR" string.
 cat > ~/.config/kanshi/save-current.sh <<'EOF'
 #!/bin/bash
-# Saves the current sway output layout as a new kanshi profile.
-PROFILE_NAME="${1:-saved-$(date +%Y%m%d%H%M%S)}"
-KANSHI_CFG="$HOME/.config/kanshi/config"
+PROFILES_DIR="$HOME/.config/kanshi/profiles.d"
+mkdir -p "$PROFILES_DIR"
 
-outputs=$(swaymsg -t get_outputs | python3 -c "
+swaymsg -t get_outputs | python3 -c "
 import json, sys
 outputs = json.load(sys.stdin)
-lines = []
-for o in outputs:
-    if not o['active']:
-        continue
-    name = o['name']
-    mode = o['current_mode']
-    w, h, r = mode['width'], mode['height'], round(mode['refresh'] / 1000)
-    x, y = o['rect']['x'], o['rect']['y']
+active = [o for o in outputs if o['active']]
+profile_name = '_'.join(sorted(o['name'] for o in active))
+lines = [f'profile {profile_name} {{']
+for o in active:
+    name  = o['name']
+    mode  = o['current_mode']
+    w, h  = mode['width'], mode['height']
+    r     = mode['refresh'] / 1000
+    x, y  = o['rect']['x'], o['rect']['y']
     scale = o.get('scale', 1.0)
-    lines.append(f'  output {name} enable mode {w}x{h}@{r}Hz position {x},{y} scale {scale}')
+    lines.append(f'  output {name} enable mode {w}x{h}@{r:.3f}Hz position {x},{y} scale {scale}')
+lines.append('}')
+print(profile_name)
 print('\n'.join(lines))
-")
-
-echo "" >> "\$KANSHI_CFG"
-echo "profile \$PROFILE_NAME {" >> "\$KANSHI_CFG"
-echo "\$outputs" >> "\$KANSHI_CFG"
-echo "}" >> "\$KANSHI_CFG"
-
-notify-send "Kanshi" "Profile '\$PROFILE_NAME' saved" 2>/dev/null || true
-kanshictl reload 2>/dev/null || true
-echo "Saved profile '\$PROFILE_NAME' to \$KANSHI_CFG"
+" | {
+  read -r profile_name
+  cat > "$PROFILES_DIR/$profile_name.conf"
+  notify-send "Kanshi" "Layout saved as '$profile_name'" 2>/dev/null || true
+  kanshictl reload 2>/dev/null || true
+  echo "Saved $PROFILES_DIR/$profile_name.conf"
+}
 EOF
 chmod +x ~/.config/kanshi/save-current.sh
-info "Installed kanshi save-current.sh helper"
+info "Installed kanshi save-current.sh"
 
 # ── Sway config ────────────────────────────────────────────
 section "Configuring Sway"
@@ -378,7 +369,8 @@ exec nm-applet --indicator
 exec blueman-applet
 exec waybar
 exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
-exec_always kanshi
+# Kill + restart kanshi on every config reload so display profiles apply cleanly
+exec_always pkill kanshi; kanshi
 
 # Notifications
 exec mako
@@ -418,8 +410,8 @@ bindsym $mod+Shift+BackSpace exec swaylock -f -c 1a1a2e
 # Screenshot (region select → save to ~/Pictures/Screenshots + copy to clipboard)
 bindsym Print exec ~/.config/waybar/scripts/screenshot.sh
 
-# Display settings
-bindsym $mod+Shift+d exec wdisplays
+# Display settings — auto-saves layout to kanshi when closed
+bindsym $mod+Shift+d exec sh -c 'wdisplays; ~/.config/kanshi/save-current.sh'
 
 # Appearance settings (GTK theme, cursor, fonts)
 bindsym $mod+Shift+a exec nwg-look
@@ -427,8 +419,14 @@ bindsym $mod+Shift+a exec nwg-look
 # Mouse speed picker
 bindsym $mod+Shift+m exec ~/.config/waybar/scripts/mouse-speed.sh
 
-# Save current display layout as kanshi profile
+# Save current display layout
 bindsym $mod+Shift+o exec ~/.config/kanshi/save-current.sh
+
+# Scroll through workspaces with mouse wheel
+bindsym --whole-window $mod+button4 workspace prev
+bindsym --whole-window $mod+button5 workspace next
+bindsym --whole-window $mod+Shift+button4 move container to workspace prev; workspace prev
+bindsym --whole-window $mod+Shift+button5 move container to workspace next; workspace next
 
 # Idle
 exec swayidle -w \
