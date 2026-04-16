@@ -25,7 +25,6 @@ set -euo pipefail
 #   Mod+Shift+D         Display settings (wdisplays)
 #   Mod+Shift+A         Appearance/GTK settings (nwg-look)
 #   Mod+Shift+M         Mouse speed picker
-#   Mod+Shift+O         Save current display layout (kanshi)
 #
 # Focus (vim-style or arrow keys)
 #   Mod+H/J/K/L         Focus left/down/up/right
@@ -90,6 +89,24 @@ command -v sudo   &>/dev/null || error "sudo missing."
 
 info "System OK"
 
+# ── Laptop selection ──────────────────────────────────────
+echo ""
+echo -e "${BOLD}Which laptop is this?${RESET}"
+echo "  1) p16g2       — ThinkPad P16 Gen 2 (Intel + NVIDIA)"
+echo "  2) pavilionx360 — HP Pavilion x360"
+echo ""
+read -rp "Enter 1 or 2: " laptop_choice
+case "$laptop_choice" in
+  1) LAPTOP="p16g2" ;;
+  2) LAPTOP="pavilionx360" ;;
+  *) error "Invalid choice." ;;
+esac
+info "Selected: $LAPTOP"
+
+if [[ "$LAPTOP" == "pavilionx360" ]]; then
+  error "pavilionx360 is not implemented yet."
+fi
+
 # ── Packages ───────────────────────────────────────────────
 section "Installing packages"
 
@@ -115,7 +132,7 @@ PACKAGES=(
   git curl base-devel
 
   pavucontrol blueman power-profiles-daemon
-  wdisplays kanshi
+  wdisplays
   intel-gpu-tools
 
   gnome-calendar gnome-online-accounts evolution-data-server evolution
@@ -151,6 +168,7 @@ section "Installing AUR packages"
 yay -S --needed --noconfirm wlogout       || warn "wlogout install failed"
 yay -S --needed --noconfirm nwg-look      || warn "nwg-look install failed"
 yay -S --needed --noconfirm forticlient-vpn || warn "forticlient-vpn install failed"
+yay -S --needed --noconfirm way-displays   || warn "way-displays install failed"
 
 # ── Services ───────────────────────────────────────────────
 section "Enabling services"
@@ -261,55 +279,31 @@ org.freedesktop.impl.portal.ScreenCast=wlr
 EOF
 info "Portal: wlr for screen capture, gtk for everything else"
 
-# ── Kanshi (display persistence) ──────────────────────────
-section "Kanshi (display layout persistence)"
+# ── way-displays (display persistence) ────────────────────
+section "way-displays"
 
-mkdir -p ~/.config/kanshi/profiles.d
+# way-displays auto-manages displays. Config is persisted in cfg.yaml.
+# External display (HDMI-A-1) above internal (eDP-1), centered.
+mkdir -p ~/.config/way-displays
 
-# Main config just includes per-layout files from profiles.d/
-cat > ~/.config/kanshi/config <<'EOF'
-include ~/.config/kanshi/profiles.d/*.conf
+cat > ~/.config/way-displays/cfg.yaml <<'EOF'
+ARRANGE: COLUMN
+ALIGN: MIDDLE
+ORDER:
+  - 'HDMI-A-1'
+  - 'eDP-1'
+MODE:
+  - NAME_DESC: 'HDMI-A-1'
+    MAX: TRUE
+  - NAME_DESC: 'eDP-1'
+    MAX: TRUE
+SCALE:
+  - NAME_DESC: 'eDP-1'
+    SCALE: 1.5
+VRR_OFF:
+  - 'HDMI-A-1'
 EOF
-
-# Save script: writes one file per output-set to profiles.d/.
-# Filename = connected output names (e.g. eDP-1_HDMI-A-1.conf).
-# Overwriting the file is all that's needed — no regex removal.
-#
-# NOTE: No \$ escaping here. Inside <<'EOF' heredocs the content is
-# written literally, so $VAR → $VAR in the file → bash expands it
-# when the script runs. \$VAR would produce a literal "$VAR" string.
-cat > ~/.config/kanshi/save-current.sh <<'EOF'
-#!/bin/bash
-PROFILES_DIR="$HOME/.config/kanshi/profiles.d"
-mkdir -p "$PROFILES_DIR"
-
-swaymsg -t get_outputs | python3 -c "
-import json, sys
-outputs = json.load(sys.stdin)
-active = [o for o in outputs if o['active']]
-profile_name = '_'.join(sorted(o['name'] for o in active))
-lines = [f'profile {profile_name} {{']
-for o in active:
-    name  = o['name']
-    mode  = o['current_mode']
-    w, h  = mode['width'], mode['height']
-    r     = mode['refresh'] / 1000
-    x, y  = o['rect']['x'], o['rect']['y']
-    scale = o.get('scale', 1.0)
-    lines.append(f'  output {name} enable mode {w}x{h}@{r:.3f}Hz position {x},{y} scale {scale}')
-lines.append('}')
-print(profile_name)
-print('\n'.join(lines))
-" | {
-  read -r profile_name
-  cat > "$PROFILES_DIR/$profile_name.conf"
-  notify-send "Kanshi" "Layout saved as '$profile_name'" 2>/dev/null || true
-  kanshictl reload 2>/dev/null || true
-  echo "Saved $PROFILES_DIR/$profile_name.conf"
-}
-EOF
-chmod +x ~/.config/kanshi/save-current.sh
-info "Installed kanshi save-current.sh"
+info "way-displays config written"
 
 # ── Sway config ────────────────────────────────────────────
 section "Configuring Sway"
@@ -317,16 +311,10 @@ section "Configuring Sway"
 SWAY_CFG="$HOME/.config/sway/config"
 mkdir -p ~/.config/sway
 
-if [[ -f "$SWAY_CFG" ]]; then
-  BACKUP="${SWAY_CFG}.bak.$(date +%s)"
-  warn "Backing up config → $BACKUP"
-  cp "$SWAY_CFG" "$BACKUP"
-else
-  cp /etc/sway/config "$SWAY_CFG"
-fi
-
-# Remove previous managed block
-sed -i '/# >>> sway-setup/,/# <<< sway-setup/d' "$SWAY_CFG"
+# Always start from the distro default so re-running the script produces
+# a clean, reproducible config with no leftover manual edits.
+cp /etc/sway/config "$SWAY_CFG"
+info "Reset sway config from /etc/sway/config"
 
 # Remove conflicting default bindings
 sed -i '/set \$menu wmenu-run/d' "$SWAY_CFG"
@@ -369,8 +357,8 @@ exec nm-applet --indicator
 exec blueman-applet
 exec waybar
 exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
-# Kill + restart kanshi on every config reload so display profiles apply cleanly
-exec_always pkill kanshi; kanshi
+# way-displays: auto-manages display layout, persists to ~/.config/way-displays/cfg.yaml
+exec way-displays > /tmp/way-displays.${XDG_VTNR}.${USER}.log 2>&1
 
 # Notifications
 exec mako
@@ -410,17 +398,14 @@ bindsym $mod+Shift+BackSpace exec swaylock -f -c 1a1a2e
 # Screenshot (region select → save to ~/Pictures/Screenshots + copy to clipboard)
 bindsym Print exec ~/.config/waybar/scripts/screenshot.sh
 
-# Display settings — auto-saves layout to kanshi when closed
-bindsym $mod+Shift+d exec sh -c 'wdisplays; ~/.config/kanshi/save-current.sh'
+# Display settings
+bindsym $mod+Shift+d exec wdisplays
 
 # Appearance settings (GTK theme, cursor, fonts)
 bindsym $mod+Shift+a exec nwg-look
 
 # Mouse speed picker
 bindsym $mod+Shift+m exec ~/.config/waybar/scripts/mouse-speed.sh
-
-# Save current display layout
-bindsym $mod+Shift+o exec ~/.config/kanshi/save-current.sh
 
 # Scroll through workspaces with mouse wheel
 bindsym --whole-window $mod+button4 workspace prev
@@ -504,7 +489,7 @@ chmod +x ~/.config/waybar/scripts/power-profile.sh
 # Mouse speed picker (wofi-based)
 cat > ~/.config/waybar/scripts/mouse-speed.sh <<'EOF'
 #!/bin/bash
-choice=$(printf "slow (-0.5)\nnormal (0.0)\nfast (0.5)\nvery fast (0.9)" | wofi --dmenu -p "Mouse speed" -i | grep -oP '[0-9.-]+')
+choice=$(printf "very slow (-0.75)\nslow (-0.5)\nslightly slow (-0.25)\nnormal (0.0)\nslightly fast (0.25)\nfast (0.5)\nvery fast (0.75)\nmax (1.0)" | wofi --dmenu -p "Mouse speed" -i | grep -oP '[0-9.-]+')
 [[ -z "$choice" ]] && exit 0
 swaymsg "input type:pointer pointer_accel $choice"
 swaymsg "input type:touchpad pointer_accel $choice"
