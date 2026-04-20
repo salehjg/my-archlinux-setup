@@ -226,19 +226,18 @@ section "Patching GDM session entry for Intel iGPU"
 # because the desktop entry format splits values on colons,
 # which breaks by-path device paths.
 SWAY_WRAPPER="/usr/local/bin/sway-igpu"
-# Resolve by-path symlinks to real /dev/dri/cardN devices.
-# WLR_DRM_DEVICES uses ':' as a multi-device separator, so
-# by-path names (which contain colons) cannot be used directly.
-# Intel is listed first so it becomes the primary renderer.
-# NVIDIA is second so Sway can output to HDMI/DP wired through it.
-# Detect Intel and NVIDIA DRM card devices by PCI vendor ID
+# The wrapper detects GPU card devices dynamically at login time,
+# so it survives kernel upgrades that re-number /dev/dri/cardN.
+# Intel is listed first (primary renderer), NVIDIA second (HDMI/DP output).
+sudo tee "$SWAY_WRAPPER" > /dev/null <<'WRAPPER'
+#!/bin/sh
 find_gpu_card() {
-  local vendor_id="$1"
+  vendor_id="$1"
   for p in /sys/bus/pci/devices/*/; do
-    [[ "$(cat "$p/vendor" 2>/dev/null)" == "$vendor_id" ]] || continue
-    [[ "$(cat "$p/class"  2>/dev/null)" == "0x030000"   ]] || continue
+    [ "$(cat "$p/vendor" 2>/dev/null)" = "$vendor_id" ] || continue
+    [ "$(cat "$p/class"  2>/dev/null)" = "0x030000"   ] || continue
     for card in "$p"drm/card*/; do
-      [[ -d "$card" ]] || continue
+      [ -d "$card" ] || continue
       card="${card%/}"
       echo "/dev/dri/${card##*drm/}"
       return
@@ -249,14 +248,19 @@ find_gpu_card() {
 INTEL_CARD=$(find_gpu_card "0x8086")
 NVIDIA_CARD=$(find_gpu_card "0x10de")
 
-[[ -e "$INTEL_CARD" ]]  || error "Intel GPU DRM device not found"
-[[ -e "$NVIDIA_CARD" ]] || error "NVIDIA GPU DRM device not found"
-info "Intel GPU: $INTEL_CARD   NVIDIA GPU: $NVIDIA_CARD"
-sudo tee "$SWAY_WRAPPER" > /dev/null <<WRAPPER
-#!/bin/sh
-export WLR_DRM_DEVICES=${INTEL_CARD}:${NVIDIA_CARD}
+if [ -z "$INTEL_CARD" ]; then
+  echo "sway-igpu: Intel GPU not found" >&2
+  exit 1
+fi
+
+if [ -n "$NVIDIA_CARD" ]; then
+  export WLR_DRM_DEVICES="${INTEL_CARD}:${NVIDIA_CARD}"
+else
+  export WLR_DRM_DEVICES="${INTEL_CARD}"
+fi
+
 export WLR_RENDERER=vulkan
-exec sway --unsupported-gpu "\$@"
+exec sway --unsupported-gpu "$@"
 WRAPPER
 sudo chmod +x "$SWAY_WRAPPER"
 info "Installed $SWAY_WRAPPER"
