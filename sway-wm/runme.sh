@@ -34,11 +34,13 @@ set -euo pipefail
 #   Mod+Shift+H/J/K/L   Move window left/down/up/right
 #   Mod+Shift+Arrows
 #
-# Workspaces
-#   Mod+1..10           Switch to workspace
-#   Mod+Shift+1..10     Move window to workspace
-#   Mod+ScrollUp/Down   Switch workspace
-#   Mod+Shift+Scroll    Move window to prev/next workspace
+# Workspaces (per-display: internal = 1..10, external = F1..F10)
+#   Mod+1..0            Switch to workspace 1..10 on internal (eDP-1)
+#   Mod+Shift+1..0      Move window to workspace 1..10 on internal
+#   Mod+F1..F10         Switch to workspace 11..20 on external (HDMI-A-1)
+#   Mod+Shift+F1..F10   Move window to workspace 11..20 on external
+#   Mod+ScrollUp/Down   Cycle workspaces on the display under the cursor
+#   Mod+Shift+Scroll    Move window to prev/next workspace on that display
 #
 # Layout
 #   Mod+B               Split horizontal
@@ -325,6 +327,10 @@ sed -i '/set \$menu wmenu-run/d' "$SWAY_CFG"
 sed -i '/bindsym \$mod+d exec \$menu/d' "$SWAY_CFG"
 sed -i '/bindsym Print exec grim$/d' "$SWAY_CFG"
 
+# Remove default workspace bindings (we redefine them per-display below)
+sed -i '/bindsym \$mod+[0-9]\+ workspace number/d' "$SWAY_CFG"
+sed -i '/bindsym \$mod+Shift+[0-9]\+ move container to workspace number/d' "$SWAY_CFG"
+
 # Remove default bar
 sed -i '/^bar {/,/^}/d' "$SWAY_CFG"
 
@@ -411,16 +417,84 @@ bindsym $mod+Shift+a exec nwg-look
 # Mouse speed picker
 bindsym $mod+Shift+m exec ~/.config/waybar/scripts/mouse-speed.sh
 
-# Scroll through workspaces with mouse wheel
-bindsym --whole-window $mod+button4 workspace prev
-bindsym --whole-window $mod+button5 workspace next
-bindsym --whole-window $mod+Shift+button4 move container to workspace prev; workspace prev
-bindsym --whole-window $mod+Shift+button5 move container to workspace next; workspace next
+# Per-display workspaces
+# Internal (eDP-1) owns workspaces 1..10, external (HDMI-A-1) owns 11..20.
+# Names default to those numbers; waybar maps 11..20 back to "1..10" visually.
+workspace 1  output eDP-1
+workspace 2  output eDP-1
+workspace 3  output eDP-1
+workspace 4  output eDP-1
+workspace 5  output eDP-1
+workspace 6  output eDP-1
+workspace 7  output eDP-1
+workspace 8  output eDP-1
+workspace 9  output eDP-1
+workspace 10 output eDP-1
+workspace 11 output HDMI-A-1
+workspace 12 output HDMI-A-1
+workspace 13 output HDMI-A-1
+workspace 14 output HDMI-A-1
+workspace 15 output HDMI-A-1
+workspace 16 output HDMI-A-1
+workspace 17 output HDMI-A-1
+workspace 18 output HDMI-A-1
+workspace 19 output HDMI-A-1
+workspace 20 output HDMI-A-1
 
-# Idle
+# Internal display: number row -> workspaces 1..10
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+5 workspace number 5
+bindsym $mod+6 workspace number 6
+bindsym $mod+7 workspace number 7
+bindsym $mod+8 workspace number 8
+bindsym $mod+9 workspace number 9
+bindsym $mod+0 workspace number 10
+bindsym $mod+Shift+1 move container to workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3
+bindsym $mod+Shift+4 move container to workspace number 4
+bindsym $mod+Shift+5 move container to workspace number 5
+bindsym $mod+Shift+6 move container to workspace number 6
+bindsym $mod+Shift+7 move container to workspace number 7
+bindsym $mod+Shift+8 move container to workspace number 8
+bindsym $mod+Shift+9 move container to workspace number 9
+bindsym $mod+Shift+0 move container to workspace number 10
+
+# External display: F1..F10 -> workspaces 11..20
+bindsym $mod+F1  workspace number 11
+bindsym $mod+F2  workspace number 12
+bindsym $mod+F3  workspace number 13
+bindsym $mod+F4  workspace number 14
+bindsym $mod+F5  workspace number 15
+bindsym $mod+F6  workspace number 16
+bindsym $mod+F7  workspace number 17
+bindsym $mod+F8  workspace number 18
+bindsym $mod+F9  workspace number 19
+bindsym $mod+F10 workspace number 20
+bindsym $mod+Shift+F1  move container to workspace number 11
+bindsym $mod+Shift+F2  move container to workspace number 12
+bindsym $mod+Shift+F3  move container to workspace number 13
+bindsym $mod+Shift+F4  move container to workspace number 14
+bindsym $mod+Shift+F5  move container to workspace number 15
+bindsym $mod+Shift+F6  move container to workspace number 16
+bindsym $mod+Shift+F7  move container to workspace number 17
+bindsym $mod+Shift+F8  move container to workspace number 18
+bindsym $mod+Shift+F9  move container to workspace number 19
+bindsym $mod+Shift+F10 move container to workspace number 20
+
+# Mouse wheel cycles workspaces only on the display under the cursor
+bindsym --whole-window $mod+button4 workspace prev_on_output
+bindsym --whole-window $mod+button5 workspace next_on_output
+bindsym --whole-window $mod+Shift+button4 move container to workspace prev_on_output; workspace prev_on_output
+bindsym --whole-window $mod+Shift+button5 move container to workspace next_on_output; workspace next_on_output
+
+# Idle: lock at 3h, blank displays at 4h
 exec swayidle -w \
-  timeout 300  'swaylock -f -c 1a1a2e' \
-  timeout 600  'swaymsg "output * dpms off"' \
+  timeout 10800 'swaylock -f -c 1a1a2e' \
+  timeout 14400 'swaymsg "output * dpms off"' \
   resume        'swaymsg "output * dpms on"' \
   before-sleep 'swaylock -f -c 1a1a2e'
 
@@ -532,11 +606,13 @@ cat > ~/.config/waybar/config <<'EOF'
 
     "sway/workspaces": {
         "disable-scroll": true,
-        "all-outputs": true,
+        "all-outputs": false,
         "format": "{icon}",
         "format-icons": {
-            "default": "",
-            "focused": ""
+            "1": "1",  "2": "2",  "3": "3",  "4": "4",  "5": "5",
+            "6": "6",  "7": "7",  "8": "8",  "9": "9",  "10": "10",
+            "11": "1", "12": "2", "13": "3", "14": "4", "15": "5",
+            "16": "6", "17": "7", "18": "8", "19": "9", "20": "10"
         }
     },
 
@@ -623,14 +699,23 @@ window#waybar {
 }
 
 #workspaces button {
-    padding: 0 5px;
-    background: transparent;
+    padding: 0 8px;
+    margin: 4px 2px;
+    min-width: 24px;
     color: #ffffff;
+    background-color: #383c4a;
+    border-radius: 6px;
+    font-weight: bold;
 }
 
 #workspaces button.focused {
-    color: #64727D;
-    background-color: rgba(255, 255, 255, 0.1);
+    background-color: #64727D;
+    color: #ffffff;
+}
+
+#workspaces button.urgent {
+    background-color: #f53c3c;
+    color: #ffffff;
 }
 
 #clock, #cpu, #memory, #pulseaudio, #network, #battery, #tray,
