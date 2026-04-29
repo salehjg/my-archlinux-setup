@@ -10,7 +10,7 @@ set -euo pipefail
 # Mod = Super (Windows) key
 #
 # Launching
-#   Mod+Return          Open terminal (kitty)
+#   Mod+Return          Open terminal (terminator)
 #   Mod+D               App launcher (wofi)
 #   Mod+Shift+P         Power menu (wlogout)
 #   Mod+Shift+Q         Kill focused window
@@ -114,7 +114,7 @@ section "Installing packages"
 
 PACKAGES=(
   sway swaybg swaylock swayidle
-  kitty waybar wofi fuzzel
+  terminator waybar wofi fuzzel
   xorg-xwayland
   vulkan-intel vulkan-icd-loader
 
@@ -327,6 +327,11 @@ sed -i '/set \$menu wmenu-run/d' "$SWAY_CFG"
 sed -i '/bindsym \$mod+d exec \$menu/d' "$SWAY_CFG"
 sed -i '/bindsym Print exec grim$/d' "$SWAY_CFG"
 
+# Replace default $term in-place. Sway substitutes $term where bindsym is parsed,
+# so a later `set $term ...` appended at the bottom would not affect the
+# already-bound `bindsym $mod+Return exec $term` line near the top.
+sed -i 's|^set \$term .*|set $term terminator|' "$SWAY_CFG"
+
 # Remove default workspace bindings (we redefine them per-display below)
 sed -i '/bindsym \$mod+[0-9]\+ workspace number/d' "$SWAY_CFG"
 sed -i '/bindsym \$mod+Shift+[0-9]\+ move container to workspace number/d' "$SWAY_CFG"
@@ -338,9 +343,6 @@ sed -i '/^bar {/,/^}/d' "$SWAY_CFG"
 cat >> "$SWAY_CFG" <<'EOF'
 
 # >>> sway-setup (managed)
-
-# Terminal
-set $term kitty
 
 # Launcher
 set $menu wofi --show drun
@@ -702,14 +704,14 @@ window#waybar {
     padding: 0 8px;
     margin: 4px 2px;
     min-width: 24px;
-    color: #ffffff;
-    background-color: #383c4a;
+    color: #2b303b;
+    background-color: #d3d3d3;
     border-radius: 6px;
     font-weight: bold;
 }
 
 #workspaces button.focused {
-    background-color: #64727D;
+    background-color: #00bfff;
     color: #ffffff;
 }
 
@@ -760,15 +762,32 @@ window#waybar {
 #custom-power-profile.power-saver { color: #a8e6cf; }
 EOF
 
-# ── Kitty (terminal) ──────────────────────────────────────
-section "Kitty"
+# ── Terminator (terminal) ─────────────────────────────────
+section "Terminator"
 
-mkdir -p ~/.config/kitty
+mkdir -p ~/.config/terminator
 
-cat > ~/.config/kitty/kitty.conf <<'EOF'
-font_family      monospace
-font_size        12.0
-enable_audio_bell no
+cat > ~/.config/terminator/config <<'EOF'
+[global_config]
+  title_hide_sizetext = True
+  suppress_multiple_term_dialog = True
+[keybindings]
+[profiles]
+  [[default]]
+    font = Monospace 12
+    use_system_font = False
+    audible_bell = False
+    scrollback_infinite = True
+    show_titlebar = False
+[layouts]
+  [[default]]
+    [[[child1]]]
+      type = Terminal
+      parent = window0
+    [[[window0]]]
+      type = Window
+      parent = ""
+[plugins]
 EOF
 
 # ── Wofi ──────────────────────────────────────────────────
