@@ -308,6 +308,7 @@ SCALE:
     SCALE: 1.5
 VRR_OFF:
   - 'HDMI-A-1'
+  - 'eDP-1'
 EOF
 info "way-displays config written"
 
@@ -361,9 +362,6 @@ exec_always dbus-update-activation-environment --systemd \
 exec_always systemctl --user import-environment \
   WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE SSH_AUTH_SOCK
 
-# Start gnome-keyring
-exec_always sh -c 'eval $(gnome-keyring-daemon --start --components=secrets,ssh 2>/dev/null)'
-
 # Autostart apps
 exec nm-applet --indicator
 exec blueman-applet
@@ -372,14 +370,16 @@ exec /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1
 # way-displays: auto-manages display layout, persists to ~/.config/way-displays/cfg.yaml
 exec way-displays > /tmp/way-displays.${XDG_VTNR}.${USER}.log 2>&1
 
+# Bing wallpaper of the day (silent no-op if offline)
+exec ~/.config/sway/scripts/bing-wallpaper.sh
+
 # Notifications
 exec mako
 
 # FortiClient tray (handles VPN SAML trust dialogs)
 exec /opt/forticlient/fortitraylauncher
 
-# Portal
-exec_always /usr/lib/xdg-desktop-portal-wlr
+# Portal: started on demand via D-Bus activation (dbus-update-activation-environment above exports the vars it needs)
 
 # Touchpad
 input type:touchpad {
@@ -502,6 +502,47 @@ exec swayidle -w \
 
 # <<< sway-setup
 EOF
+
+# ── Bing wallpaper of the day ─────────────────────────────
+section "Bing wallpaper script"
+
+mkdir -p ~/.config/sway/scripts
+
+cat > ~/.config/sway/scripts/bing-wallpaper.sh <<'EOF'
+#!/bin/bash
+# Fetch Bing's image of the day and set it as the wallpaper on every output.
+# Any failure (offline, bad JSON, partial download) exits 0 so sway's default
+# `output * bg ...` line stays in effect.
+set -u
+
+WALL_DIR="$HOME/.cache/bing-wallpaper"
+mkdir -p "$WALL_DIR"
+
+JSON=$(curl -fsSL --max-time 10 \
+  "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=en-US") || exit 0
+
+URL_PATH=$(printf '%s' "$JSON" | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin)["images"][0]["url"])
+except Exception:
+    sys.exit(1)
+') || exit 0
+[ -z "$URL_PATH" ] && exit 0
+
+TARGET="$WALL_DIR/today.jpg"
+curl -fsSL --max-time 30 -o "$TARGET.tmp" "https://www.bing.com${URL_PATH}" \
+  || { rm -f "$TARGET.tmp"; exit 0; }
+mv "$TARGET.tmp" "$TARGET"
+
+# Wait briefly for sway IPC if we beat it to the start; then push to all outputs.
+for _ in 1 2 3 4 5; do
+  swaymsg -t get_version >/dev/null 2>&1 && break
+  sleep 0.5
+done
+swaymsg "output * bg $TARGET fill" >/dev/null 2>&1 || exit 0
+EOF
+chmod +x ~/.config/sway/scripts/bing-wallpaper.sh
 
 # ── Waybar scripts ────────────────────────────────────────
 section "Waybar scripts"
