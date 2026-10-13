@@ -928,11 +928,24 @@ section "Wofi"
 
 mkdir -p ~/.config/wofi
 
+# insensitive: wofi ranks entries whose name starts with the query first, but
+# only on an exact-case match; otherwise "f" misses "Files" and falls through
+# to apps with an "f" anywhere in their description, ordered by launch count.
+# filter_rate: wofi re-filters on a timer (default 100ms); a Tab pressed before
+# it fires moves through the stale list and later launches the wrong app.
+# key_down/key_up: Tab as Down. Stock Tab also stops on the expander arrow of
+# apps with desktop actions (Files, Firefox, ...), skewing the count.
 cat > ~/.config/wofi/config <<'EOF'
 show=drun
 prompt=Run:
 width=400
 height=300
+insensitive=true
+filter_rate=10
+key_down=Down,Tab
+key_up=Up,Shift-ISO_Left_Tab
+key_forward=
+key_backward=
 EOF
 
 # ── Cursor ────────────────────────────────────────────────
