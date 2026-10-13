@@ -37,7 +37,7 @@ set -euo pipefail
 # Workspaces (per-display: internal = 1..10, external = F1..F10)
 #   Mod+1..0            Switch to workspace 1..10 on internal (eDP-1)
 #   Mod+Shift+1..0      Move window to workspace 1..10 on internal
-#   Mod+F1..F10         Switch to workspace 11..20 on external (HDMI-A-1)
+#   Mod+F1..F10         Switch to workspace 11..20 on external (any HDMI/DP port)
 #   Mod+Shift+F1..F10   Move window to workspace 11..20 on external
 #   Mod+ScrollUp/Down   Cycle workspaces on the display under the cursor
 #   Mod+Shift+Scroll    Move window to prev/next workspace on that display
@@ -109,6 +109,33 @@ if [[ "$LAPTOP" == "pavilionx360" ]]; then
   error "pavilionx360 is not implemented yet."
 fi
 
+# ── External monitor position ─────────────────────────────
+echo ""
+echo -e "${BOLD}Where is your external monitor relative to the laptop?${RESET}"
+echo "  1) left"
+echo "  2) right"
+echo "  3) above"
+echo "  4) below"
+echo ""
+read -rp "Enter 1-4: " pos_choice
+case "$pos_choice" in
+  1) EXT_POS="left" ;;
+  2) EXT_POS="right" ;;
+  3) EXT_POS="above" ;;
+  4) EXT_POS="below" ;;
+  *) error "Invalid choice." ;;
+esac
+info "External monitor: $EXT_POS of the laptop"
+
+# ── Notification timeout ──────────────────────────────────
+echo ""
+echo -e "${BOLD}Auto-dismiss notifications after how many seconds?${RESET} (0 = never)"
+read -rp "Seconds [5]: " NOTIFY_SECS
+NOTIFY_SECS="${NOTIFY_SECS:-5}"
+[[ "$NOTIFY_SECS" =~ ^[0-9]+$ ]] || error "Not a whole number: $NOTIFY_SECS"
+NOTIFY_SECS=$((10#$NOTIFY_SECS))
+info "Notifications: ${NOTIFY_SECS}s"
+
 # ── Packages ───────────────────────────────────────────────
 section "Installing packages"
 
@@ -128,7 +155,9 @@ PACKAGES=(
   brightnessctl playerctl
   mako
   xdg-desktop-portal-gtk
+  nautilus
 
+  adwaita-cursors
   noto-fonts noto-fonts-emoji ttf-dejavu otf-font-awesome
   ttf-nerd-fonts-symbols ttf-nerd-fonts-symbols-mono
   git curl base-devel
@@ -288,29 +317,64 @@ info "Portal: wlr for screen capture, gtk for everything else"
 # ── way-displays (display persistence) ────────────────────
 section "way-displays"
 
-# way-displays auto-manages displays. Config is persisted in cfg.yaml.
-# External display (HDMI-A-1) above internal (eDP-1), centered.
+# Connector names from /sys/class/drm/cardN-<name> are the names sway uses.
+# The internal panel is eDP-*; everything else (HDMI, DP, USB-C DP alt mode)
+# is external. The sway config pins workspaces to these names.
+OUT_INT=""
+OUT_EXT=()
+for conn in /sys/class/drm/card*-*; do
+  [[ -e "$conn" ]] || continue
+  name="${conn##*/}"
+  name="${name#card*-}"
+  case "$name" in
+    eDP-*|LVDS-*|DSI-*) : "${OUT_INT:=$name}" ;;
+    Writeback-*)        ;;
+    *)                  OUT_EXT+=("$name") ;;
+  esac
+done
+OUT_INT="${OUT_INT:-eDP-1}"
+(( ${#OUT_EXT[@]} )) || OUT_EXT=(HDMI-A-1 DP-1 DP-2)
+info "Internal display: $OUT_INT"
+info "External ports:   ${OUT_EXT[*]}"
+
+# way-displays applies the layout at runtime, every time a display is plugged
+# in, so it adapts to whatever monitor is connected:
+#   - MAX picks each display's highest resolution and refresh rate
+#   - AUTO_SCALE derives the external's scale from its DPI (FHD -> 1.0,
+#     27" 1440p -> 1.125, ...); the internal panel is pinned to 1.5
+#   - ARRANGE + ORDER put the external on the chosen side, and ALIGN: MIDDLE
+#     centres the smaller display along the shared edge
+# Externals are matched by connector type, so any HDMI/DP port works.
+EXT_MATCH='!^(HDMI|DP|DVI|VGA)-'
+case "$EXT_POS" in
+  left)  WD_ARRANGE=ROW;    WD_ORDER=("$EXT_MATCH" "$OUT_INT") ;;
+  right) WD_ARRANGE=ROW;    WD_ORDER=("$OUT_INT" "$EXT_MATCH") ;;
+  above) WD_ARRANGE=COLUMN; WD_ORDER=("$EXT_MATCH" "$OUT_INT") ;;
+  below) WD_ARRANGE=COLUMN; WD_ORDER=("$OUT_INT" "$EXT_MATCH") ;;
+esac
+
 mkdir -p ~/.config/way-displays
 
-cat > ~/.config/way-displays/cfg.yaml <<'EOF'
-ARRANGE: COLUMN
+cat > ~/.config/way-displays/cfg.yaml <<EOF
+ARRANGE: $WD_ARRANGE
 ALIGN: MIDDLE
 ORDER:
-  - 'HDMI-A-1'
-  - 'eDP-1'
-MODE:
-  - NAME_DESC: 'HDMI-A-1'
-    MAX: TRUE
-  - NAME_DESC: 'eDP-1'
-    MAX: TRUE
+  - '${WD_ORDER[0]}'
+  - '${WD_ORDER[1]}'
+AUTO_SCALE: TRUE
+AUTO_SCALE_MIN: 1
 SCALE:
-  - NAME_DESC: 'eDP-1'
-    SCALE: 1.5
+  '$OUT_INT': 1.5
+MODE:
+  '$OUT_INT':
+    MAX: TRUE
+  '$EXT_MATCH':
+    MAX: TRUE
 VRR_OFF:
-  - 'HDMI-A-1'
-  - 'eDP-1'
+  - '$OUT_INT'
+  - '$EXT_MATCH'
 EOF
-info "way-displays config written"
+info "way-displays config written (external $EXT_POS, centred)"
 
 # ── Sway config ────────────────────────────────────────────
 section "Configuring Sway"
@@ -340,10 +404,35 @@ sed -i '/bindsym \$mod+Shift+[0-9]\+ move container to workspace number/d' "$SWA
 # Remove default bar
 sed -i '/^bar {/,/^}/d' "$SWAY_CFG"
 
+# Cursor theme for sway (compositor + XWayland) and GTK apps. GTK draws its
+# own cursor from gsettings; if that theme is not installed (nwg-look had left
+# 'bloom-dark'), libwayland-cursor falls back to a fixed 10x16 built-in arrow
+# that ignores the requested size, so it shrinks on the 1.5x internal panel.
+CURSOR_THEME="Adwaita"
+CURSOR_SIZE=24
+
+# Values detected/chosen by this script, exposed as sway variables
+cat >> "$SWAY_CFG" <<EOF
+
+# >>> sway-setup (managed)
+
+# Outputs (detected by runme.sh)
+set \$out_int $OUT_INT
+set \$out_ext ${OUT_EXT[*]}
+
+# Cursor
+set \$cursor_theme $CURSOR_THEME
+set \$cursor_size $CURSOR_SIZE
+EOF
+
 # Append clean config
 cat >> "$SWAY_CFG" <<'EOF'
 
-# >>> sway-setup (managed)
+# Cursor: same theme and size for the compositor and for GTK apps.
+# (Overrides any cursor picked in nwg-look; change it in runme.sh instead.)
+seat * xcursor_theme $cursor_theme $cursor_size
+exec_always gsettings set org.gnome.desktop.interface cursor-theme $cursor_theme
+exec_always gsettings set org.gnome.desktop.interface cursor-size $cursor_size
 
 # Launcher
 set $menu wofi --show drun
@@ -355,12 +444,14 @@ bindsym $mod+Shift+slash exec grep -E '^ *bindsym' ~/.config/sway/config | sed '
 # Power menu
 bindsym $mod+Shift+p exec wlogout
 
-# Environment sync
+# Environment sync (XCURSOR_* are set by sway from the seat cursor above)
 exec_always dbus-update-activation-environment --systemd \
-  WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE SSH_AUTH_SOCK
+  WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE SSH_AUTH_SOCK \
+  XCURSOR_THEME XCURSOR_SIZE
 
 exec_always systemctl --user import-environment \
-  WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE SSH_AUTH_SOCK
+  WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE SSH_AUTH_SOCK \
+  XCURSOR_THEME XCURSOR_SIZE
 
 # Autostart apps
 exec nm-applet --indicator
@@ -413,35 +504,36 @@ bindsym Print exec ~/.config/waybar/scripts/screenshot.sh
 # Display settings
 bindsym $mod+Shift+d exec wdisplays
 
-# Appearance settings (GTK theme, cursor, fonts)
+# Appearance settings (GTK theme, fonts; cursor is pinned above)
 bindsym $mod+Shift+a exec nwg-look
 
 # Mouse speed picker
 bindsym $mod+Shift+m exec ~/.config/waybar/scripts/mouse-speed.sh
 
 # Per-display workspaces
-# Internal (eDP-1) owns workspaces 1..10, external (HDMI-A-1) owns 11..20.
+# Internal ($out_int) owns workspaces 1..10, external owns 11..20. $out_ext lists
+# every external port; sway uses the first one that is connected.
 # Names default to those numbers; waybar maps 11..20 back to "1..10" visually.
-workspace 1  output eDP-1
-workspace 2  output eDP-1
-workspace 3  output eDP-1
-workspace 4  output eDP-1
-workspace 5  output eDP-1
-workspace 6  output eDP-1
-workspace 7  output eDP-1
-workspace 8  output eDP-1
-workspace 9  output eDP-1
-workspace 10 output eDP-1
-workspace 11 output HDMI-A-1
-workspace 12 output HDMI-A-1
-workspace 13 output HDMI-A-1
-workspace 14 output HDMI-A-1
-workspace 15 output HDMI-A-1
-workspace 16 output HDMI-A-1
-workspace 17 output HDMI-A-1
-workspace 18 output HDMI-A-1
-workspace 19 output HDMI-A-1
-workspace 20 output HDMI-A-1
+workspace 1  output $out_int
+workspace 2  output $out_int
+workspace 3  output $out_int
+workspace 4  output $out_int
+workspace 5  output $out_int
+workspace 6  output $out_int
+workspace 7  output $out_int
+workspace 8  output $out_int
+workspace 9  output $out_int
+workspace 10 output $out_int
+workspace 11 output $out_ext
+workspace 12 output $out_ext
+workspace 13 output $out_ext
+workspace 14 output $out_ext
+workspace 15 output $out_ext
+workspace 16 output $out_ext
+workspace 17 output $out_ext
+workspace 18 output $out_ext
+workspace 19 output $out_ext
+workspace 20 output $out_ext
 
 # Internal display: number row -> workspaces 1..10
 bindsym $mod+1 workspace number 1
@@ -842,6 +934,55 @@ prompt=Run:
 width=400
 height=300
 EOF
+
+# ── Cursor ────────────────────────────────────────────────
+section "Cursor"
+
+# sway pins the theme on every start (see the seat line in the sway config);
+# also apply it now and fix the GTK ini files nwg-look wrote, so XWayland GTK
+# apps agree.
+gsettings set org.gnome.desktop.interface cursor-theme "$CURSOR_THEME" 2>/dev/null || true
+gsettings set org.gnome.desktop.interface cursor-size "$CURSOR_SIZE" 2>/dev/null || true
+for ini in ~/.config/gtk-3.0/settings.ini ~/.config/gtk-4.0/settings.ini; do
+  [[ -f "$ini" ]] || continue
+  sed -i -e "s/^gtk-cursor-theme-name=.*/gtk-cursor-theme-name=$CURSOR_THEME/" \
+         -e "s/^gtk-cursor-theme-size=.*/gtk-cursor-theme-size=$CURSOR_SIZE/" "$ini"
+done
+info "Cursor: $CURSOR_THEME $CURSOR_SIZE"
+
+# ── Nautilus ──────────────────────────────────────────────
+section "Nautilus"
+
+# The stock entry is DBusActivatable, so launchers (wofi goes through GIO) send
+# a D-Bus Activate to the running instance instead of running Exec. Nautilus
+# then just raises its existing window or opens a tab in it, ignoring
+# --new-window. A user-level override turns activation off and forces
+# --new-window on every Exec line.
+NAUTILUS_DESKTOP="/usr/share/applications/org.gnome.Nautilus.desktop"
+if [ -f "$NAUTILUS_DESKTOP" ]; then
+  mkdir -p ~/.local/share/applications
+  sed -e 's/^DBusActivatable=.*/DBusActivatable=false/' \
+      -e 's/^Exec=nautilus --new-window/Exec=nautilus/' \
+      -e 's/^Exec=nautilus/Exec=nautilus --new-window/' \
+      "$NAUTILUS_DESKTOP" > ~/.local/share/applications/org.gnome.Nautilus.desktop
+  info "Nautilus always opens a new window"
+else
+  warn "$NAUTILUS_DESKTOP not found, skipping"
+fi
+
+# ── Mako (notifications) ──────────────────────────────────
+section "Mako"
+
+mkdir -p ~/.config/mako
+
+# ignore-timeout: apply default-timeout even when the sending app asks for its
+# own timeout (many ask for "never expire"). 0 = never expire.
+cat > ~/.config/mako/config <<EOF
+default-timeout=$((NOTIFY_SECS * 1000))
+ignore-timeout=1
+EOF
+makoctl reload 2>/dev/null || true
+info "Notifications auto-dismiss after ${NOTIFY_SECS}s"
 
 # ── Done ──────────────────────────────────────────────────
 section "Done"
